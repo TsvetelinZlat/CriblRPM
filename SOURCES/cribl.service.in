@@ -1,0 +1,32 @@
+# TEMPLATE - @CRIBL_USER@ is substituted at build time by the spec.
+# No Group= on purpose: systemd falls back to the account's own primary group,
+# so the package never depends on a group existing.
+# Modelled on bin/cribl.service.template shipped inside the Cribl tarball,
+# with a drop-in environment file added.
+[Unit]
+Description=Cribl Stream
+Documentation=https://docs.cribl.io/stream/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=@CRIBL_USER@
+WorkingDirectory=/opt/cribl
+PIDFile=/opt/cribl/pid/cribl.pid
+EnvironmentFile=-/etc/sysconfig/cribl
+Environment=CRIBL_HOME=/opt/cribl
+Environment=CRIBL_SERVICE=1
+Environment=CRIBL_SERVICE_NAME=cribl
+ExecStart=/opt/cribl/bin/cribl start
+ExecStop=/opt/cribl/bin/cribl stop
+ExecReload=/opt/cribl/bin/cribl reload
+Restart=always
+RestartSec=5
+TimeoutSec=60
+# Cribl opens a large number of sockets and files; the default 1024 is far
+# too low for any real workload.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

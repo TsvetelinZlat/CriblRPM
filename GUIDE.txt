@@ -1,0 +1,295 @@
+================================================================================
+ CRIBL RPM - BUILD AND INSTALL GUIDE
+ Package: cribl-4.19.1-2.x86_64  (repack of cribl-4.19.1-2566299d-linux-x64.tgz)
+================================================================================
+
+--------------------------------------------------------------------------------
+0. TL;DR
+--------------------------------------------------------------------------------
+Already built and tested. To just install it on a RHEL/Rocky/Alma 9 host:
+
+    sudo dnf install -y ./RPMS/cribl-4.19.1-2.x86_64.rpm
+    sudo systemctl enable --now cribl
+
+NOTE: -2 runs as ta2crib and REQUIRES that account to already exist; the
+install aborts cleanly if it does not. -1 runs as a 'cribl' account the
+package creates itself. For the 3-server deployment use -2 and follow
+ADMIN-RUNBOOK.txt.
+
+Then open http://<host>:9000  (login admin / admin, it forces a change).
+
+To rebuild from source on a RHEL-family host:
+
+    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.src.rpm
+
+To rebuild on this Windows machine (uses the Ubuntu WSL instance):
+
+    wsl -d Ubuntu -u root -- /mnt/c/work/cribl-rpm/build.sh
+
+
+--------------------------------------------------------------------------------
+1. WHAT IS IN THIS FOLDER
+--------------------------------------------------------------------------------
+RPMS/cribl-4.19.1-2.x86_64.rpm      CURRENT. Runs as ta2crib, owns files as
+                                    ta2crib:root, creates no groups, requires
+                                    the account to pre-exist. 80 MB.
+RPMS/cribl-4.19.1-1.x86_64.rpm      Superseded. Creates and runs as its own
+                                    'cribl' account. Kept for reference.
+SRPMS/cribl-4.19.1-2.src.rpm        Source RPM. Everything needed to rebuild the
+                                    binary package, in one file. 92 MB.
+
+SPECS/cribl.spec                    The spec file. Read this first if you want
+                                    to change anything.
+SOURCES/                            Build inputs:
+  cribl-4.19.1-...-linux-x64.tgz      the official Cribl tarball
+  cribl.service.in                    systemd unit template (User= filled in
+                                      at build time from cribl_user)
+  cribl.sysconfig                     becomes /etc/sysconfig/cribl
+  README.packaging.md                 ships inside the RPM as documentation
+
+build.sh                            Builds the binary RPM + runs a smoke test.
+srpm.sh                             Builds the source RPM.
+verify.sh                           Inspects a built RPM without installing it.
+
+test/ta2crib-test.sh                27-check suite for the -2 package: refusal
+                                    without the account, ownership, no group
+                                    changes, upgrade preserves ownership.
+test/ownership-probe.sh             Demonstrates why root cannot own the
+                                    payload (Cribl refuses to start).
+test/dropin-test.sh                 Verifies the -1 chown + drop-in workaround.
+test/container-test.sh              25-check install suite (plain container).
+test/systemd-test.sh                systemd suite: unit, scriptlets, upgrade,
+                                    erase.
+test/Dockerfile.systemd             Rocky 9 image with systemd as PID 1.
+
+toolchain/minimal/                  123 RPMs: rpm-build + rpmdevtools and the
+                                    deps a stock Rocky 9 does NOT already have.
+                                    28 MB. Use this on an existing RHEL 9 box
+                                    with no internet access.
+toolchain/full-closure/             240 RPMs: the complete dependency closure
+                                    including base-system packages. 85 MB. Use
+                                    this only for a truly bare / minimal image.
+
+
+--------------------------------------------------------------------------------
+2. SETTING UP A BUILD HOST
+--------------------------------------------------------------------------------
+2a. With internet, on RHEL / Rocky / Alma 9:
+
+    sudo dnf install -y rpm-build rpmdevtools
+
+2b. WITHOUT internet (air-gapped). Copy toolchain/minimal to the host, then:
+
+    sudo dnf install -y --disablerepo=* ./minimal/*.rpm
+
+    If that complains about missing base packages, the machine is more minimal
+    than a stock install - use toolchain/full-closure/ instead. Nothing here
+    needs a network connection; these are the .rpm files themselves.
+
+2c. On this Windows machine, the build runs inside WSL. Already set up, but for
+    the record, what was done:
+
+    wsl -d Ubuntu -u root -- apt-get install -y rpm
+
+    "wsl -u root" gets root WITHOUT a sudo password, which is why no password
+    was ever needed. Debian's "rpm" package provides /usr/bin/rpmbuild.
+
+
+--------------------------------------------------------------------------------
+3. BUILDING
+--------------------------------------------------------------------------------
+3a. Easiest - rebuild straight from the source RPM (any RHEL-family host):
+
+    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.src.rpm
+
+    Output lands in ~/rpmbuild/RPMS/x86_64/.
+
+3b. From this folder, on Windows:
+
+    wsl -d Ubuntu -u root -- /mnt/c/work/cribl-rpm/build.sh
+
+    build.sh copies everything into /var/tmp/cribl-rpmbuild (the WSL native
+    filesystem - building on /mnt/c is roughly ten times slower), runs
+    rpmbuild, copies the result back into RPMS/, then unpacks the package into
+    a throwaway root as a smoke test.
+
+3c. Rebuild the source RPM after editing the spec:
+
+    wsl -d Ubuntu -u root -- /mnt/c/work/cribl-rpm/srpm.sh
+
+3d. To package a DIFFERENT Cribl version:
+
+    - Drop the new tarball in SOURCES/
+    - Edit SPECS/cribl.spec: change Version: and the %global cribl_build line
+      so Source0 matches the new filename
+    - Add a %changelog entry at the bottom
+    - Re-run build.sh
+
+    Expect the build to take a couple of minutes; most of it is unpacking
+    ~1 GB and recompressing.
+
+
+--------------------------------------------------------------------------------
+4. TESTING
+--------------------------------------------------------------------------------
+Requires Docker Desktop running.
+
+4a. ta2crib suite for the CURRENT package - refusal without the account,
+    ta2crib:root ownership, no group changes, upgrade preserves ownership,
+    erase keeps config (27 checks). This is the one that matters:
+
+    docker build -f test/Dockerfile.systemd -t cribl-systemd-test test
+    docker run -d --name cribl-ta2crib --privileged --cgroupns=host         -v /sys/fs/cgroup:/sys/fs/cgroup:rw         -v C:/work/cribl-rpm/RPMS:/rpms:ro         -v C:/work/cribl-rpm/test:/test:ro cribl-systemd-test
+    docker exec cribl-ta2crib bash /test/ta2crib-test.sh
+
+4a-bis. Install suite for the superseded -1 package - deps, %pre user
+    creation, file placement, upgrade and erase paths (25 checks):
+
+    docker run --rm -v C:/work/cribl-rpm/RPMS:/rpms:ro \
+        -v C:/work/cribl-rpm/test:/test:ro \
+        rockylinux:9 bash /test/container-test.sh
+
+4b. systemd suite - the unit file, %post preset, Type=forking / PIDFile
+    tracking, try-restart on upgrade, disable-on-erase:
+
+    docker build -f test/Dockerfile.systemd -t cribl-systemd-test test
+    docker run -d --name cribl-systemd --privileged --cgroupns=host \
+        -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+        -v C:/work/cribl-rpm/RPMS:/rpms:ro \
+        -v C:/work/cribl-rpm/test:/test:ro cribl-systemd-test
+    docker exec cribl-systemd bash /test/systemd-test.sh
+
+4c. Inspect a package without installing it:
+
+    wsl -d Ubuntu -u root -- /mnt/c/work/cribl-rpm/verify.sh
+
+4d. Run the GUI locally to click around. Host port 9000 is in a Windows
+    reserved range, so map a different host port:
+
+    docker run -d --name cribl-gui --privileged --cgroupns=host \
+        -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+        -v C:/work/cribl-rpm/RPMS:/rpms:ro \
+        -p 19000:9000 cribl-systemd-test
+    docker exec cribl-gui bash -c "dnf install -y /rpms/*.rpm && systemctl enable --now cribl"
+
+    Then browse to http://localhost:19000
+
+KNOWN FALSE ALARM: running "rpm -U" against a package sitting on a Docker or
+WSL bind mount fails with "cpio: read failed - No such file or directory".
+This is a Docker Desktop 9p mount artifact, NOT a package bug - copying the
+same RPM to local disk first and upgrading returns 0 with the service still
+running. Always copy the RPM to local disk before installing.
+
+
+--------------------------------------------------------------------------------
+5. INSTALLING ON A REAL HOST
+--------------------------------------------------------------------------------
+Copy the RPM to the host with scp (NOT via a shared/mounted folder - see the
+known false alarm above), then:
+
+    sudo dnf install -y ./cribl-4.19.1-1.x86_64.rpm
+
+This creates the cribl system account, unpacks to /opt/cribl, and installs the
+unit - but deliberately does NOT start anything.
+
+If this node is a Worker or a managed Edge node, set the mode BEFORE first
+start, because Cribl bakes decisions into local/ on first boot:
+
+    sudo vi /etc/sysconfig/cribl        # uncomment CRIBL_DIST_MODE etc.
+
+Start it:
+
+    sudo systemctl enable --now cribl
+    systemctl status cribl
+
+Firewall, if one is running:
+
+    sudo firewall-cmd --permanent --add-port=9000/tcp     # UI
+    sudo firewall-cmd --permanent --add-port=4200/tcp     # Leader only
+    sudo firewall-cmd --reload
+
+UI: http://<host>:9000 - login admin / admin, changed on first login.
+
+Uninstall:
+
+    sudo dnf remove cribl
+
+Stops and disables the service and removes the payload, but deliberately KEEPS
+/opt/cribl/local (your config) and /opt/cribl/log. For a clean wipe:
+
+    sudo rm -rf /opt/cribl
+    sudo userdel cribl        # the package does not remove the account
+
+
+--------------------------------------------------------------------------------
+6. LICENSING AND INTERNET ACCESS
+--------------------------------------------------------------------------------
+Installing the RPM needs NO internet. The package is fully self-contained,
+including Cribl's bundled Node.js runtime. The only Requires are glibc,
+libstdc++, systemd and shadow-utils, all present on any real RHEL host.
+
+RUNNING Cribl on the Free license DOES need internet. The Free license is
+bundled in the download, never expires and needs no key - but it requires
+telemetry metadata to reach https://cdn.cribl.io/telemetry/ about once a
+minute. If that is blocked or telemetry is disabled, Cribl BLOCKS INBOUND
+TRAFFIC WITHIN 24 HOURS. A Free license is therefore not viable air-gapped.
+
+For an offline deployment you need a paid license key, pre-seeded to skip the
+registration web form:
+
+    printf 'licenses:\n- <your-license-key>\n' \
+        | sudo -u cribl tee /opt/cribl/local/cribl/licenses.yml
+
+That path is inside the directory the package intentionally leaves unowned, so
+it survives both upgrades and uninstall.
+
+Docs: https://docs.cribl.io/billing-licensing/on-prem-licensing/
+
+
+--------------------------------------------------------------------------------
+7. PACKAGING DECISIONS (why the spec looks the way it does)
+--------------------------------------------------------------------------------
+- All RPM payload post-processing is disabled (__os_install_post %{nil},
+  debug_package %{nil}). Cribl ships prebuilt binaries, native .node addons and
+  a bundled libjemalloc.so. Letting RPM strip them or rewrite their shebangs
+  breaks the install.
+
+- AutoReqProv: no. Auto-detection would emit hundreds of meaningless Provides
+  from bundled shared objects. Requires are listed by hand instead. Verified:
+  the package provides only "cribl" and nothing else.
+
+- /opt/cribl/{local,log,pid,groups} ship as empty package-owned DIRECTORIES,
+  but their contents are unowned. That is what makes config and logs survive
+  both "rpm -U" and "rpm -e". /opt/cribl/default IS package-owned and does get
+  replaced on upgrade - correct, since that is Cribl's shipped defaults, not
+  your configuration.
+
+- The service is installed but NOT auto-enabled; %post runs "systemctl preset"
+  per standard RPM policy.
+
+- Files are owned ta2crib:root, NOT root:root. This is forced by Cribl, whose
+  launcher refuses to start unless the invoking user owns bin/cribl:
+    "Cannot run command because user=X does not own executable
+     /opt/cribl/bin/cribl"
+  Group is root because no group needs to exist; access is by owner. See
+  test/ownership-probe.sh, which demonstrates the three failing layouts.
+
+- %pre REFUSES to install if the service account is missing, rather than
+  creating a local one that could shadow a directory-managed account.
+
+- Payload compressed with xz -2, not the default -9. The payload is already
+  gzip, so maximum compression buys almost nothing for a lot of CPU. xz keeps
+  compatibility back to rpm 4.8; zstd would have excluded RHEL 7.
+
+- The unit is modelled on bin/cribl.service.template from inside the tarball
+  (Type=forking + PIDFile), with Group=cribl and an EnvironmentFile added.
+  Verified under real systemd: MainPID matches the pidfile.
+
+OUTSTANDING / NOT DONE:
+- The RPM is NOT SIGNED. Sign before publishing to a repo:
+      rpm --addsign RPMS/cribl-4.19.1-1.x86_64.rpm
+- No SELinux policy module ships. On enforcing hosts Cribl generally runs as
+  unconfined_service_t, but check for denials after first start:
+      sudo ausearch -m avc -ts recent
+- Not yet tested on a real VM: behaviour across a reboot. Everything else has
+  been verified in containers.

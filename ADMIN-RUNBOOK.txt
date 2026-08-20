@@ -1,0 +1,221 @@
+================================================================================
+ CRIBL 4.19.1 - RHEL ADMIN RUNBOOK
+ 3 servers: 1 Leader + 2 Workers.  Service runs as: ta2crib
+ Package: cribl-4.19.1-2.x86_64.rpm
+================================================================================
+
+WHAT THIS PACKAGE DOES
+Installs Cribl to /opt/cribl, owned by ta2crib:root, and installs a systemd
+unit that runs the service as ta2crib. No groups are created or modified, and
+ta2crib's existing group membership is left alone. Install, set the mode,
+start - there are no ownership fix-ups to apply, before or after upgrades.
+
+WHY ta2crib OWNS THE FILES RATHER THAN root
+Cribl's launcher refuses to start unless the user running it owns
+/opt/cribl/bin/cribl:
+
+    ERROR: Cannot run command because user=X does not own executable
+    /opt/cribl/bin/cribl
+
+So root-owning the payload while running as ta2crib is not possible. The
+package therefore owns everything as ta2crib:root - group root, because no
+group needs to exist and access is by owner throughout.
+
+NOTE FOR ANYONE COMPARING VERSIONS: release -1 shipped as the 'cribl' account
+and needed a manual chown plus a systemd drop-in, which had to be re-applied
+after every upgrade. Release -2 makes that unnecessary. Use -2.
+
+
+--------------------------------------------------------------------------------
+A. PREREQUISITES  (verify on all 3 servers before starting)
+--------------------------------------------------------------------------------
+1.  RHEL / Rocky / Alma 8 or 9, x86_64. The RPM is ExclusiveArch x86_64.
+
+2.  *** THE ta2crib ACCOUNT MUST ALREADY EXIST. THE INSTALL REFUSES OTHERWISE. ***
+
+        getent passwd ta2crib
+
+    The package deliberately does NOT create it - a local account could shadow
+    a directory-managed one and silently split ownership. If it is missing the
+    install aborts in %pre with a message telling you exactly what to run, and
+    nothing is left half-installed.
+
+    Its primary group does not matter and is not touched.
+
+3.  Disk: 203 MB installed under /opt. Persistent queues and disk spooling
+    also live under /opt/cribl and can reach tens of GB. If /opt is on a small
+    root partition, mount a dedicated filesystem BEFORE installing.
+
+4.  The RPM IS UNSIGNED. If /etc/dnf/dnf.conf sets localpkg_gpgcheck=1 the
+    install fails. Either sign it first (preferred for 3 servers):
+
+        rpm --addsign cribl-4.19.1-2.x86_64.rpm
+
+    or install with --nogpgcheck. Decide before starting.
+
+5.  Firewall:
+        Leader   : inbound 9000/tcp (UI), inbound 4200/tcp (from the 2 Workers)
+        Workers  : inbound 9000/tcp (local UI, optional)
+        All three: OUTBOUND HTTPS to cdn.cribl.io  <-- see section E, mandatory
+
+6.  chronyd running and in sync on all three (cert validation between Leader
+    and Workers depends on it).
+
+7.  DNS or /etc/hosts resolution of the Leader hostname from both Workers.
+
+8.  Check SELinux mode so you know whether to watch for denials:
+
+        getenforce
+
+9.  Transfer the RPM with scp. Do NOT install from an NFS/CIFS/shared mount -
+    see section F.
+
+
+--------------------------------------------------------------------------------
+B. INSTALL  (run as root on ALL THREE servers)
+--------------------------------------------------------------------------------
+        dnf install -y ./cribl-4.19.1-2.x86_64.rpm
+
+That is the whole install. It unpacks to /opt/cribl owned by ta2crib:root,
+installs the unit with User=ta2crib, and deliberately starts nothing.
+
+Verify before going further:
+
+        rpm -q cribl
+        stat -c '%U:%G' /opt/cribl/bin/cribl        # expect ta2crib:root
+        systemctl show -p User --value cribl        # expect ta2crib
+
+
+--------------------------------------------------------------------------------
+C. CONFIGURE THE MODE  (before the first start - Cribl bakes this into
+   /opt/cribl/local on first boot, so changing it later means undoing state)
+--------------------------------------------------------------------------------
+ON THE LEADER:
+
+        vi /etc/sysconfig/cribl
+            CRIBL_DIST_MODE=master
+
+ON BOTH WORKERS:
+
+        vi /etc/sysconfig/cribl
+            CRIBL_DIST_MODE=worker
+            CRIBL_DIST_LEADER_URL=tcp://<authToken>@<leader-host>:4200
+
+The auth token comes from the Leader UI once it is up
+(Settings > Global Settings > Distributed Settings). So the practical order is:
+start the Leader first, collect the token, then configure and start the two
+Workers.
+
+
+--------------------------------------------------------------------------------
+D. START  (Leader first, then the Workers)
+--------------------------------------------------------------------------------
+        systemctl enable --now cribl
+        systemctl status cribl
+
+Confirm it is genuinely running as ta2crib and not root:
+
+        ps -o user=,pid=,cmd= -p $(systemctl show -p MainPID --value cribl)
+
+Leader UI: http://<leader>:9000 - first login admin / admin, forced change.
+
+UPGRADES: nothing special. "dnf upgrade" preserves ta2crib ownership and
+restarts the service if it was running. No chown, no re-applying anything.
+
+UNINSTALL:
+
+        dnf remove cribl
+
+Stops and disables the service and removes the payload, but deliberately KEEPS
+/opt/cribl/local (config) and /opt/cribl/log, and leaves the ta2crib account
+alone. For a clean wipe: rm -rf /opt/cribl
+
+
+--------------------------------------------------------------------------------
+E. LICENSING AND INTERNET  -  READ BEFORE GOING LIVE
+--------------------------------------------------------------------------------
+Installing needs no internet; the RPM is self-contained.
+
+RUNNING Cribl on the bundled Free license DOES need internet. Free requires
+telemetry metadata to reach https://cdn.cribl.io/telemetry/ roughly once a
+minute from every node. If that is blocked, or telemetry is disabled, CRIBL
+BLOCKS INBOUND TRAFFIC WITHIN 24 HOURS. A Free license is not viable in an
+air-gapped or egress-restricted environment.
+
+If egress goes through a proxy, add to /etc/sysconfig/cribl on all three:
+
+        HTTPS_PROXY=http://<proxy>:<port>
+        NO_PROXY=localhost,127.0.0.1,<leader-host>
+
+With a paid license, pre-seed the key to skip the registration web form:
+
+        sudo -u ta2crib tee /opt/cribl/local/cribl/licenses.yml <<'EOF'
+        licenses:
+        - <your-license-key>
+        EOF
+
+Reference: https://docs.cribl.io/billing-licensing/on-prem-licensing/
+
+
+--------------------------------------------------------------------------------
+F. KNOWN GOTCHAS
+--------------------------------------------------------------------------------
+1.  Installing the RPM from a network/shared mount can fail with
+    "cpio: read failed - No such file or directory". Copy it to local disk
+    first (scp to /var/tmp), then install from there.
+
+2.  Do not run the cribl CLI as root. It warns about this itself, and doing so
+    leaves root-owned files under /opt/cribl that the service cannot write -
+    which then trips Cribl's own ownership check on the next start:
+
+        sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl <command>
+
+3.  /opt/cribl/local is mode 0750 because it holds the auth secrets
+    (cribl.secret, users.json). Do not loosen it.
+
+4.  SELinux: no policy module ships with this package. On enforcing hosts,
+    check after the first start:
+
+        ausearch -m avc -ts recent
+
+
+--------------------------------------------------------------------------------
+G. GIVING ta2crib DAY-TO-DAY CONTROL WITHOUT ROOT
+--------------------------------------------------------------------------------
+ta2crib owns /opt/cribl, so it can read and write logs and config directly.
+But it cannot start or stop the service without root. If ta2crib is expected
+to operate Cribl, add a scoped sudoers drop-in at install time - retrofitting
+this later means another change request:
+
+        cat > /etc/sudoers.d/ta2crib-cribl <<'EOF'
+        ta2crib ALL=(root) NOPASSWD: /usr/bin/systemctl start cribl, \
+            /usr/bin/systemctl stop cribl, \
+            /usr/bin/systemctl restart cribl, \
+            /usr/bin/systemctl status cribl, \
+            /usr/bin/journalctl -u cribl
+        EOF
+        chmod 440 /etc/sudoers.d/ta2crib-cribl
+        visudo -c
+
+Most routine Cribl work (pipelines, routes, config changes, commit/deploy) is
+done in the UI as a Cribl user and needs none of this. The sudo rules only
+cover service-level actions.
+
+
+--------------------------------------------------------------------------------
+H. VERIFICATION EVIDENCE
+--------------------------------------------------------------------------------
+This package was tested on Rocky 9 with systemd as PID 1, against a ta2crib
+account whose primary group was deliberately a broad directory-style group,
+to confirm none of it depends on group layout. 27 checks, all passing:
+
+  - install refuses cleanly when ta2crib is absent, leaving nothing behind
+  - no groups created, ta2crib's primary group untouched, no stray account
+  - ownership is ta2crib:root across bin/data/default/state/thirdparty and
+    the runtime dirs; local/ is 0750
+  - unit has User=ta2crib and no Group=
+  - service starts, runs as ta2crib, MainPID matches the pidfile, UI HTTP 200
+  - rpm -U preserves ownership, keeps the service up, keeps config
+  - rpm -e stops the service, keeps config, leaves the ta2crib account alone
+
+Re-run it yourself with test/ta2crib-test.sh - see GUIDE.txt section 4.
