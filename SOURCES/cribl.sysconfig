@@ -1,0 +1,14 @@
+# Environment for the Cribl service (systemd EnvironmentFile).
+# Full list of variables: https://docs.cribl.io/stream/deploy-env-vars/
+# This file is %config(noreplace) -- edits survive package upgrades.
+
+# Deployment mode. Uncomment ONE of the following:
+#CRIBL_DIST_MODE=single
+#CRIBL_DIST_MODE=managed-edge
+#CRIBL_DIST_MODE=worker
+
+# Worker/managed-edge nodes: how to reach the Leader.
+#CRIBL_DIST_LEADER_URL=tcp://<authToken>@<leader-host>:4200
+
+# Persist configuration outside CRIBL_HOME (useful for shared storage).
+#CRIBL_VOLUME_DIR=/opt/cribl

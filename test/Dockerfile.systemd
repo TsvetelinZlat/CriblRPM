@@ -1,0 +1,9 @@
+# Rocky 9 with systemd as PID 1, so the unit file and scriptlets can be
+# exercised for real. Requires --privileged --cgroupns=host to run.
+FROM rockylinux:9
+RUN dnf -y install systemd procps-ng && dnf clean all && \
+    # Strip the getty/login units a container has no use for.
+    rm -f /lib/systemd/system/multi-user.target.wants/* \
+          /etc/systemd/system/*.wants/* \
+          /lib/systemd/system/sockets.target.wants/*udev* || true
+CMD ["/sbin/init"]
