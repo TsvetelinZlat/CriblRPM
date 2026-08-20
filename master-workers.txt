@@ -1,0 +1,323 @@
+================================================================================
+ CRIBL 4.19.1 - LEADER + WORKERS CONFIGURATION GUIDE
+ Target: 1 Leader + 2 Workers, installed from cribl-4.19.1-2.x86_64.rpm,
+         service account ta2crib
+================================================================================
+
+READ THIS FIRST - TWO CORRECTIONS TO EARLIER ADVICE
+Both were found by testing 4.19.1 directly, not by reading docs.
+
+1. *** git MUST BE INSTALLED ON THE LEADER. ***
+   Without it, Cribl in leader mode NEVER finishes starting. It logs
+   "Git not found. Config versioning will not be available", then hangs and
+   systemd restart-loops it forever. Symptom is a service stuck in
+   "activating" that never reaches "active".
+   Measured: with git absent, the Leader never came up (killed repeatedly at
+   the 60s timeout). With git installed, it was up in 8 SECONDS.
+   Workers do NOT need git. Only the Leader.
+
+2. *** DO NOT USE CRIBL_DIST_MODE. IT DOES NOT WORK IN 4.19.1. ***
+   Setting CRIBL_DIST_MODE=master in /etc/sysconfig/cribl prevents Cribl from
+   starting at all - it hangs until its own launcher gives up with
+   "Cribl is not up even after 60 seconds, exiting". Removing the variable
+   makes it start normally again. The string CRIBL_DIST_* does not appear
+   anywhere in the 4.19.1 distribution.
+   The commented-out CRIBL_DIST_MODE / CRIBL_DIST_LEADER_URL lines in the
+   shipped /etc/sysconfig/cribl are WRONG. Ignore them. Leave them commented.
+   Use the "cribl mode-*" CLI instead, as below.
+
+
+--------------------------------------------------------------------------------
+A. PREREQUISITES SPECIFIC TO DISTRIBUTED MODE
+--------------------------------------------------------------------------------
+(These are on top of the general ones in ADMIN-RUNBOOK.txt section A.)
+
+ON THE LEADER ONLY:
+
+    dnf install -y git
+    git --version              # any modern git is fine; tested with 2.52.0
+
+PORTS:
+    Leader  : inbound 9000/tcp (UI), inbound 4200/tcp (from both Workers)
+    Workers : outbound 4200/tcp to the Leader. No inbound needed from Leader -
+              Workers always initiate the connection.
+
+VERSIONS:
+    Leader and Workers should run the SAME Cribl version. Use the same RPM on
+    all three. When upgrading later, upgrade the LEADER FIRST, then the
+    Workers. A newer Leader may show config options in the UI that do nothing
+    until the Workers are upgraded to match.
+
+NAME RESOLUTION:
+    Both Workers must resolve the Leader's hostname. DNS or /etc/hosts.
+
+
+--------------------------------------------------------------------------------
+B. CONFIGURE THE LEADER
+--------------------------------------------------------------------------------
+Install the RPM (see ADMIN-RUNBOOK.txt), install git, then - BEFORE the first
+start - put the instance into leader mode. Run this as ta2crib, never as root:
+
+    systemctl stop cribl        # if it is already running
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-master
+
+Output is simply:
+
+    Settings updated.
+
+Useful options (all optional; defaults shown are what you get with none):
+
+    -H <host>       bind address for the Worker listener   (default 0.0.0.0)
+    -p <port>       Worker listener port                   (default 4200)
+    -u <authToken>  shared secret Workers authenticate with
+    -S <true|false> TLS between Leader and Workers
+
+For example, to set the auth token at the same time:
+
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-master \
+        -u 'SomeLongSharedSecret'
+
+WHAT IT WRITES - /opt/cribl/local/_system/instance.yml:
+
+    distributed:
+      mode: master
+      master:
+        host: 0.0.0.0
+        port: 4200
+        resiliency: none
+
+Start it:
+
+    systemctl start cribl
+    systemctl is-active cribl                 # expect: active
+
+Verify:
+
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl status
+        Mode:   master
+        Status: Up
+
+    ss -tln | grep -E ':(9000|4200)'          # both must be listening
+
+If 4200 is not listening but the UI is, wait a few seconds and re-check - the
+Worker listener opens slightly after the API. If the service sits in
+"activating" and never settles, git is almost certainly missing (see item 1).
+
+The Leader creates its group directories on first start:
+
+    /opt/cribl/groups/default
+    /opt/cribl/groups/default_fleet
+    /opt/cribl/groups/default_outpost
+
+This is where Leader-side config for each Worker Group lives. Note that on a
+single instance config lives in /opt/cribl/local; on a Leader, the config it
+DEPLOYS to Workers lives under /opt/cribl/groups/<groupName>/.
+
+
+--------------------------------------------------------------------------------
+C. GET THE AUTH TOKEN
+--------------------------------------------------------------------------------
+Log in to the Leader UI at http://<leader>:9000 and go to:
+
+    Settings > Global Settings > Distributed Settings
+
+The auth token is the shared secret Workers present when they connect. The
+built-in default is "criblmaster" - CHANGE IT before adding Workers, and note
+the value for step D.
+
+
+--------------------------------------------------------------------------------
+D. CONFIGURE THE TWO WORKERS
+--------------------------------------------------------------------------------
+On each Worker, install the RPM (no git needed), then - BEFORE first start:
+
+    systemctl stop cribl
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-worker \
+        -H <leader-host> -p 4200 -u '<authToken>' -g default
+
+Options that matter:
+
+    -H <host>       Leader hostname or IP            REQUIRED
+    -p <port>       Leader port                      REQUIRED (4200)
+    -u <authToken>  the token from step C
+    -g <group>      Worker Group to join             (default: default)
+    -t <tags>       tags reported to the Leader, usable in Mapping Rules
+    -S <true|false> TLS to the Leader
+
+Then:
+
+    systemctl start cribl
+    systemctl is-active cribl
+
+Verify from the Worker:
+
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl status
+        Mode: worker
+
+Repeat identically on the second Worker.
+
+ALTERNATIVE - the Leader can generate a bootstrap script that does the install
+and the mode-worker step in one go:
+
+    curl 'http://<leader>:9000/init/install-worker.sh?token=<authToken>' | sh
+
+That path installs Cribl from Cribl's CDN as the 'cribl' user, which does NOT
+match this RPM-based, ta2crib-owned deployment. Prefer the explicit
+mode-worker command above. Use the bootstrap script only if you abandon the
+RPM approach.
+
+
+--------------------------------------------------------------------------------
+E. VERIFY THE FLEET
+--------------------------------------------------------------------------------
+In the Leader UI:
+
+    Manage > Worker Nodes  (or the Workers page)
+
+Both Workers should appear within about 10 seconds - that is the heartbeat
+interval. Each heartbeat carries hostname, IP, GUID, tags, and the software
+and config versions, which is how the Leader detects version skew.
+
+WHEN A WORKER DOES NOT APPEAR, check in this order:
+
+  1. Can the Worker reach the Leader at all?
+         timeout 5 bash -c '</dev/tcp/<leader-host>/4200' && echo OPEN
+  2. Firewall on the Leader allowing 4200 inbound?
+  3. Does the auth token on the Worker match the Leader's Distributed Settings?
+     A mismatch is silent from the UI side - the Worker just never registers.
+  4. Is the Leader genuinely in leader mode?
+         cribl status        # must say Mode: master, not single
+  5. Worker-side errors:
+         sudo -u ta2crib tail -50 /opt/cribl/log/cribl.log
+         journalctl -u cribl -n 50
+  6. Hostname resolution from the Worker to the Leader.
+
+
+--------------------------------------------------------------------------------
+F. WORKER GROUPS AND MAPPINGS
+--------------------------------------------------------------------------------
+A Worker Group is a set of Worker Nodes sharing one configuration. Every
+Worker is assigned to exactly one Group.
+
+Assignment happens through a MAPPING RULESET on the Leader: an ordered list of
+filter expressions evaluated against each Worker's reported facts - hostname,
+IP, tags, environment variables. First match wins. A Worker that matches
+nothing lands in "default".
+
+With two Workers doing the same job, the out-of-the-box "default" group is
+usually all you need, and you can skip mappings entirely.
+
+You would create additional Groups when you want different pipelines or
+different sources on different Workers - for example a group for syslog
+receivers and another for HTTP collectors. Assign with -t tags at mode-worker
+time, then write a Mapping Rule that matches those tags.
+
+*** FREE LICENSE LIMIT - VERIFIED ON 4.19.1 ***
+On a Free license the Leader logs:
+
+    "Number of worker groups has been limited by the license"
+    groups: ["default"]   disallowed: ["default_outpost"]
+
+So Free gives you the single "default" Worker Group. If your design needs more
+than one Group, you need a paid license. Free also disallows Leader resiliency
+(HA/failover):
+
+    "leader resiliency disallowed by current license...reverting to single leader"
+
+That second one does not matter here - the design is one Leader anyway.
+
+
+--------------------------------------------------------------------------------
+G. COMMIT AND DEPLOY  -  THE PART PEOPLE MISS
+--------------------------------------------------------------------------------
+On a single instance, saving a change applies it. In a distributed deployment
+it does NOT. Config changes made on the Leader are inert until deployed:
+
+    1. Make the change in the Leader UI, scoped to a Worker Group.
+    2. COMMIT - versions the change in git. This is why the Leader needs git.
+       Nothing has reached the Workers yet.
+    3. DEPLOY - pushes the committed config bundle to the Workers in that
+       Group. The Workers fetch it over 4200 and restart their Worker
+       Processes.
+
+Two commit scopes exist:
+    - Global Commit: commits all Worker Groups and the Leader together.
+      Versioned, but still not deployed.
+    - Worker Group Commit & Deploy: commits and deploys one Group in a single
+      action, making it live for that Group immediately.
+
+If a change "isn't working", the first thing to check is whether it was
+deployed, not just saved. The Leader UI shows a pending-commit indicator per
+Group.
+
+
+--------------------------------------------------------------------------------
+H. WHERE CONFIG LIVES, AND WHAT SURVIVES AN RPM UPGRADE
+--------------------------------------------------------------------------------
+LEADER:
+    /opt/cribl/local/_system/instance.yml     leader/worker mode setting
+    /opt/cribl/local/cribl/                   Leader's own config + auth
+    /opt/cribl/groups/<group>/                config deployed to each Group
+    /opt/cribl/log/                           Leader logs
+
+WORKER:
+    /opt/cribl/local/_system/instance.yml     mode + Leader address + token
+    /opt/cribl/local/cribl/                   config received from the Leader
+    /opt/cribl/log/                           Worker logs
+
+All of the above sit inside directories the RPM owns but whose CONTENTS it
+does not, so `dnf upgrade` and `dnf remove` both leave them intact. Ownership
+stays ta2crib:root across upgrades - no chown needed. See ADMIN-RUNBOOK.txt.
+
+Do not hand-edit files under /opt/cribl/groups on the Leader; use the UI and
+the commit/deploy cycle, or git and the Leader will disagree about state.
+
+
+--------------------------------------------------------------------------------
+I. QUICK REFERENCE
+--------------------------------------------------------------------------------
+Leader setup:
+    dnf install -y git
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-master
+    systemctl enable --now cribl
+
+Worker setup (x2):
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-worker \
+        -H <leader> -p 4200 -u '<token>' -g default
+    systemctl enable --now cribl
+
+Check mode on any node:
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl status
+
+Back to standalone:
+    sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-single
+
+Upgrade order:  Leader first, then Workers, same version everywhere.
+
+
+--------------------------------------------------------------------------------
+J. WHAT WAS ACTUALLY TESTED VS DOCUMENTED
+--------------------------------------------------------------------------------
+VERIFIED HANDS-ON against 4.19.1 in a Rocky 9 container with systemd:
+  - git absent  => leader mode never starts, endless restart loop
+  - git present => leader up in 8s, Mode: master, 9000 and 4200 both listening
+  - CRIBL_DIST_MODE=master => prevents startup entirely; removing it fixes it
+  - cribl mode-master writes local/_system/instance.yml as shown
+  - Leader creates groups/{default,default_fleet,default_outpost}
+  - Free license limits Worker Groups to "default" and disallows resiliency
+  - mode-master / mode-worker option lists are copied from the binary's own
+    help output
+
+FROM CRIBL DOCS, NOT INDEPENDENTLY TESTED HERE:
+  - Worker registration and the Workers page, 10s heartbeat contents
+  - Mapping Ruleset evaluation order and first-match behaviour
+  - Commit vs Deploy semantics and the two commit scopes
+  - Upgrade ordering and version-skew guidance
+  A second and third node were not stood up, so the Worker side of the
+  handshake was not exercised end to end. Treat sections D, E, F and G as
+  documentation-based until you have run them on the real servers.
+
+Sources:
+  https://docs.cribl.io/stream/deploy-distributed/
+  https://docs.cribl.io/stream/deploy-workers/
+  https://docs.cribl.io/stream/upgrading/

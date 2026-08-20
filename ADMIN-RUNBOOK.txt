@@ -58,16 +58,24 @@ A. PREREQUISITES  (verify on all 3 servers before starting)
         Workers  : inbound 9000/tcp (local UI, optional)
         All three: OUTBOUND HTTPS to cdn.cribl.io  <-- see section E, mandatory
 
-6.  chronyd running and in sync on all three (cert validation between Leader
+6.  *** ON THE LEADER ONLY: git MUST BE INSTALLED. ***
+
+        dnf install -y git
+
+    Without it Cribl in leader mode never finishes starting - it hangs and
+    systemd restart-loops it forever. Verified: no git = never starts;
+    git present = Leader up in 8 seconds. Workers do not need git.
+
+7.  chronyd running and in sync on all three (cert validation between Leader
     and Workers depends on it).
 
-7.  DNS or /etc/hosts resolution of the Leader hostname from both Workers.
+8.  DNS or /etc/hosts resolution of the Leader hostname from both Workers.
 
-8.  Check SELinux mode so you know whether to watch for denials:
+9.  Check SELinux mode so you know whether to watch for denials:
 
         getenforce
 
-9.  Transfer the RPM with scp. Do NOT install from an NFS/CIFS/shared mount -
+10. Transfer the RPM with scp. Do NOT install from an NFS/CIFS/shared mount -
     see section F.
 
 
@@ -90,21 +98,29 @@ Verify before going further:
 C. CONFIGURE THE MODE  (before the first start - Cribl bakes this into
    /opt/cribl/local on first boot, so changing it later means undoing state)
 --------------------------------------------------------------------------------
+*** CORRECTION: CRIBL_DIST_MODE DOES NOT WORK IN 4.19.1. ***
+Setting it in /etc/sysconfig/cribl prevents Cribl from starting at all. The
+commented-out CRIBL_DIST_* lines in that file are wrong - leave them alone.
+Use the CLI instead, and see master-workers.txt for the full procedure.
+
+*** THE LEADER ALSO REQUIRES git INSTALLED, or it never finishes starting. ***
+
 ON THE LEADER:
 
-        vi /etc/sysconfig/cribl
-            CRIBL_DIST_MODE=master
+        dnf install -y git
+        sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl mode-master
 
 ON BOTH WORKERS:
 
-        vi /etc/sysconfig/cribl
-            CRIBL_DIST_MODE=worker
-            CRIBL_DIST_LEADER_URL=tcp://<authToken>@<leader-host>:4200
+        sudo -u ta2crib CRIBL_HOME=/opt/cribl /opt/cribl/bin/cribl \
+            mode-worker -H <leader-host> -p 4200 -u '<authToken>' -g default
 
 The auth token comes from the Leader UI once it is up
 (Settings > Global Settings > Distributed Settings). So the practical order is:
 start the Leader first, collect the token, then configure and start the two
 Workers.
+
+FULL DETAIL, INCLUDING VERIFICATION AND TROUBLESHOOTING: master-workers.txt
 
 
 --------------------------------------------------------------------------------
