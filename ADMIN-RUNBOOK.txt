@@ -1,7 +1,8 @@
 ================================================================================
  CRIBL 4.19.1 - RHEL ADMIN RUNBOOK
  3 servers: 1 Leader + 2 Workers.  Service runs as: ta2crib
- Package: cribl-4.19.1-2.x86_64.rpm
+ Packages: cribl-4.19.1-2.el8.x86_64.rpm  (RHEL/Rocky/Alma 8)
+           cribl-4.19.1-2.el9.x86_64.rpm  (RHEL/Rocky/Alma 9)
 ================================================================================
 
 WHAT THIS PACKAGE DOES
@@ -30,6 +31,9 @@ after every upgrade. Release -2 makes that unnecessary. Use -2.
 A. PREREQUISITES  (verify on all 3 servers before starting)
 --------------------------------------------------------------------------------
 1.  RHEL / Rocky / Alma 8 or 9, x86_64. The RPM is ExclusiveArch x86_64.
+    Verified by installing and running Cribl on Rocky 8.9 (rpm 4.14, glibc
+    2.28) and Rocky 9.3 (rpm 4.16, glibc 2.34): UI HTTP 200 on both.
+    Take the .el8 build for RHEL 8 hosts and the .el9 build for RHEL 9.
 
 2.  *** THE ta2crib ACCOUNT MUST ALREADY EXIST. THE INSTALL REFUSES OTHERWISE. ***
 
@@ -49,7 +53,8 @@ A. PREREQUISITES  (verify on all 3 servers before starting)
 4.  The RPM IS UNSIGNED. If /etc/dnf/dnf.conf sets localpkg_gpgcheck=1 the
     install fails. Either sign it first (preferred for 3 servers):
 
-        rpm --addsign cribl-4.19.1-2.x86_64.rpm
+        rpm --addsign cribl-4.19.1-2.el8.x86_64.rpm
+        rpm --addsign cribl-4.19.1-2.el9.x86_64.rpm
 
     or install with --nogpgcheck. Decide before starting.
 
@@ -82,7 +87,12 @@ A. PREREQUISITES  (verify on all 3 servers before starting)
 --------------------------------------------------------------------------------
 B. INSTALL  (run as root on ALL THREE servers)
 --------------------------------------------------------------------------------
-        dnf install -y ./cribl-4.19.1-2.x86_64.rpm
+        dnf install -y ./cribl-4.19.1-2.el8.x86_64.rpm   # on RHEL 8 hosts
+        dnf install -y ./cribl-4.19.1-2.el9.x86_64.rpm   # on RHEL 9 hosts
+
+Use the build matching the host OS major version. The payload is byte-for-byte
+the same in both; only the Release tag differs (2.el8 vs 2.el9), so the
+installed package identifies which platform it was published for.
 
 That is the whole install. It unpacks to /opt/cribl owned by ta2crib:root,
 installs the unit with User=ta2crib, and deliberately starts nothing.

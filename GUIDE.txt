@@ -1,6 +1,7 @@
 ================================================================================
  CRIBL RPM - BUILD AND INSTALL GUIDE
- Package: cribl-4.19.1-2.x86_64  (repack of cribl-4.19.1-2566299d-linux-x64.tgz)
+ Packages: cribl-4.19.1-2.el8.x86_64 / cribl-4.19.1-2.el9.x86_64
+           (repack of cribl-4.19.1-2566299d-linux-x64.tgz)
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -8,7 +9,7 @@
 --------------------------------------------------------------------------------
 Already built and tested. To just install it on a RHEL/Rocky/Alma 9 host:
 
-    sudo dnf install -y ./RPMS/cribl-4.19.1-2.x86_64.rpm
+    sudo dnf install -y ./RPMS/cribl-4.19.1-2.el9.x86_64.rpm   # or -2.el8 on RHEL 8
     sudo systemctl enable --now cribl
 
 NOTE: -2 runs as ta2crib and REQUIRES that account to already exist; the
@@ -20,7 +21,7 @@ Then open http://<host>:9000  (login admin / admin, it forces a change).
 
 To rebuild from source on a RHEL-family host:
 
-    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.src.rpm
+    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.el9.src.rpm
 
 To rebuild on this Windows machine (uses the Ubuntu WSL instance):
 
@@ -30,13 +31,16 @@ To rebuild on this Windows machine (uses the Ubuntu WSL instance):
 --------------------------------------------------------------------------------
 1. WHAT IS IN THIS FOLDER
 --------------------------------------------------------------------------------
-RPMS/cribl-4.19.1-2.x86_64.rpm      CURRENT. Runs as ta2crib, owns files as
-                                    ta2crib:root, creates no groups, requires
-                                    the account to pre-exist. 80 MB.
-RPMS/cribl-4.19.1-1.x86_64.rpm      Superseded. Creates and runs as its own
-                                    'cribl' account. Kept for reference.
-SRPMS/cribl-4.19.1-2.src.rpm        Source RPM. Everything needed to rebuild the
-                                    binary package, in one file. 92 MB.
+RPMS/cribl-4.19.1-2.el8.x86_64.rpm  CURRENT, for RHEL/Rocky/Alma 8.
+RPMS/cribl-4.19.1-2.el9.x86_64.rpm  CURRENT, for RHEL/Rocky/Alma 9.
+                                    Identical payload; only the Release tag
+                                    differs. Both run as ta2crib, own files as
+                                    ta2crib:root, create no groups, and require
+                                    the account to pre-exist. 80 MB each.
+SRPMS/cribl-4.19.1-2.el{8,9}.src.rpm  Matching source RPMs. 92 MB each.
+superseded/                         Earlier builds with no dist tag, and the
+                                    original -1 that used a 'cribl' account.
+                                    Do not ship these.
 
 SPECS/cribl.spec                    The spec file. Read this first if you want
                                     to change anything.
@@ -47,7 +51,10 @@ SOURCES/                            Build inputs:
   cribl.sysconfig                     becomes /etc/sysconfig/cribl
   README.packaging.md                 ships inside the RPM as documentation
 
-build.sh                            Builds the binary RPM + runs a smoke test.
+build.sh                            Builds BOTH the el8 and el9 packages plus
+                                    their SRPMs, then smoke-tests each and
+                                    asserts the Release tag is correct.
+                                    Pass .el8 or .el9 to build just one.
 srpm.sh                             Builds the source RPM.
 verify.sh                           Inspects a built RPM without installing it.
 
@@ -100,7 +107,7 @@ toolchain/full-closure/             240 RPMs: the complete dependency closure
 --------------------------------------------------------------------------------
 3a. Easiest - rebuild straight from the source RPM (any RHEL-family host):
 
-    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.src.rpm
+    rpmbuild --rebuild SRPMS/cribl-4.19.1-2.el9.src.rpm
 
     Output lands in ~/rpmbuild/RPMS/x86_64/.
 
